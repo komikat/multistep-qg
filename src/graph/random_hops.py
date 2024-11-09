@@ -1,10 +1,6 @@
 import networkx as nx
 import random
 
-# remember to use init.py to generate graph first!
-G = nx.read_graphml("../../dataset/MetaQA/movies.graphml")
-print(f"Graph loaded with {len(G.nodes)} nodes!")
-
 def random_hop(G):
     node = random.choice(list(G.nodes))
     neighbours = list (G. successors (node)) + list (G.predecessors (node) )
@@ -20,5 +16,9 @@ def random_hop(G):
         if not neighbours:
             break
 
-random_hop(G)
+if __name__ == "__main__":
+    # remember to use init.py to generate graph first!
+    G = nx.read_graphml("../../dataset/MetaQA/movies.graphml")
+    print(f"Graph loaded with {len(G.nodes)} nodes!")
+    random_hop(G)
 
