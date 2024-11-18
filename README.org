@@ -5,11 +5,37 @@
 Given some context and an answer, generate questions which involve multi-hop reasoning.
 
 * Experiments
-** RAG
+** Recursive RAG
 
 * Using a Knowledge base as context
 ** MetaQA
 We utilized the MetaQA dataset of movies for experimentation.
+
+## Direct Inference Baseline
+Datasets used - MusiQue
+- We give Llama-3.2 8B the complex question and context and get the response
+- We calculate ROUGE score between the response and ground truth answer
+
+### Direct Inference Baseline results
+
+| Dataset | ROUGE-1 F1 | ROUGE-2 F1 | ROUGE-L F1 | Exact Matches | Partial Matches |
+|---------|------------|------------|------------|---------------|-----------------|
+| Musique | 0.1515 | 0.0816 | 0.1504 | 0.0532 | 0.1831 |
+
+
+## Recursive RAG Baseline
+Datasets used - MusiQue and MetaQA
+- We first break the knowledge base into chunks and get embeddings using MiniLM for each chunk and store them in a vector database
+- We calculate the embedding for each query and use faiss to get the top-k similar chunks
+- The retrieved chunks are used to search for other chunks in the knowledge base and get the top-k' similar chunks. This is done recursively.
+- All the retrieved chunks and the complex question are given to Llama-3.2 8B
+- We calculate ROUGE score between the response and ground truth answer
+
+### Baseline results
+| Model | ROUGE-1 F1 | ROUGE-2 F1 | ROUGE-L F1 | Exact Matches | Partial Matches |
+|---------|------------|------------|------------|---------------|-----------------|
+| Musique | 0.3047 | 0.1916 | 0.3045 | 0.1791 | 0.3183 |
+| MetaQA | 0.2029 | 0.1912 | 0.1782 | 0.1148 | 0.2230 |
 
 ** Knowledge graph
 - We first converted the knowledge base into a knowledge graph.

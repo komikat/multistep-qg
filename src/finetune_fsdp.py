@@ -1,16 +1,15 @@
 import os
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP  # Added this import
-import pandas as pd
-from datasets import Dataset, DatasetDict
+from torch.nn.parallel import DistributedDataParallel as DDP
+import json
+from datasets import Dataset
 from transformers import (
     AutoTokenizer,
     AutoConfig,
     AutoModelForCausalLM, 
     TrainingArguments, 
-    Trainer,
-    DataCollatorForLanguageModeling
+    Trainer
 )
 import logging
 import wandb
@@ -26,7 +25,6 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import (
 from tqdm.auto import tqdm
 import torch.nn as nn
 from typing import Dict, Union, Any
-from transformers import get_cosine_schedule_with_warmup
 
 os.environ["NCCL_DEBUG"] = "WARN"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -42,6 +40,87 @@ def setup_logging():
     logger.addHandler(console_handler)
     
     return logger
+
+def format_qa_pair(item):
+    """Format a single QA pair from the JSON data."""
+    complex_q = item['complex']['question']
+    simple_questions = '\n'.join([hop['question'] for hop in item['hops']])
+    answer = item['complex']['answer']
+    
+    # Add a clear separator between input and output
+    return {
+        "input": f"""Complex question: {complex_q}
+Simple questions:
+{simple_questions}
+
+Answer: """,
+        "output": answer
+    }
+
+def prepare_dataset(json_file):
+    """Load and prepare the dataset from JSON file."""
+    with open(json_file, 'r') as f:
+        data = json.load(f)
+    
+    # Format each example
+    formatted_data = [format_qa_pair(item) for item in data]
+    
+    # Create dataset
+    dataset = Dataset.from_list(formatted_data)
+    return dataset
+
+def tokenize_function(examples, tokenizer, max_length=512):
+    """Tokenize the examples and create loss masks."""
+    # Combine input and output but keep track of the boundary
+    input_texts = examples["input"]
+    output_texts = examples["output"]
+    
+    # First tokenize inputs to get their lengths
+    input_tokens = tokenizer(
+        input_texts,
+        padding=False,
+        truncation=False,
+        return_attention_mask=False
+    )
+    
+    # Tokenize the full sequences (input + output)
+    full_texts = [f"{tokenizer.bos_token}{inp}{out}{tokenizer.eos_token}" 
+                 for inp, out in zip(input_texts, output_texts)]
+    
+    result = tokenizer(
+        full_texts,
+        padding="max_length",
+        truncation=True,
+        max_length=max_length,
+        return_tensors=None,
+        return_attention_mask=True
+    )
+    
+    # Create labels: -100 for input tokens, actual token ids for output, pad_token_id for padding
+    labels = []
+    for i in range(len(full_texts)):
+        input_length = len(input_tokens['input_ids'][i])
+        
+        # Account for BOS token
+        input_length += 1
+        
+        # Get the sequence length before padding
+        seq_length = len(result['input_ids'][i])
+        
+        # Create labels: -100 for input, actual ids for output
+        seq_labels = [-100] * input_length + \
+                    result['input_ids'][i][input_length:seq_length]
+        
+        # Pad with pad_token_id if necessary
+        if len(seq_labels) < max_length:
+            seq_labels.extend([tokenizer.pad_token_id] * (max_length - len(seq_labels)))
+        else:
+            seq_labels = seq_labels[:max_length]
+        
+        labels.append(seq_labels)
+    
+    result["labels"] = labels
+    return result
 
 class CustomDataCollator:
     def __init__(self, tokenizer):
@@ -105,7 +184,6 @@ class CustomTrainer(Trainer):
             # Restore original value
             args_dict.gradient_checkpointing = original_gradient_checkpointing
 
-
 def setup_wandb(local_rank):
     if local_rank in [-1, 0]:
         run = wandb.init(
@@ -114,8 +192,8 @@ def setup_wandb(local_rank):
             config={
                 "learning_rate": 1e-5,
                 "epochs": 3,
-                "batch_size": 8,
-                "model": "llama-3.2-2b",
+                "batch_size": 1,
+                "model": "llama-3.2-1b",
                 "weight_decay": 0.01,
             }
         )
@@ -137,7 +215,7 @@ def setup_accelerator():
     fsdp_plugin = FullyShardedDataParallelPlugin(
         state_dict_config=FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
         optim_state_dict_config=FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True),
-        sharding_strategy="NO_SHARD",  # Changed from FULL_SHARD
+        sharding_strategy="NO_SHARD",
         mixed_precision_policy=mixed_precision_policy,
         backward_prefetch="BACKWARD_POST",
     )
@@ -151,7 +229,7 @@ def setup_accelerator():
         log_with="wandb",
         mixed_precision="fp16" if is_gpu_available else None,
         device_placement=True,
-        dispatch_batches=True  # Added this
+        dispatch_batches=True
     )
     
     return accelerator, is_gpu_available
@@ -193,40 +271,27 @@ def main():
                 backend="nccl" if torch.cuda.is_available() else "gloo"
             )
 
-        # Load dataset
-        df = pd.read_csv('metaqa.csv')
-        train_dataset = Dataset.from_pandas(df[['sentence']])
+        # Load and prepare dataset
+        train_dataset = prepare_dataset('graph/dataset.json')
         
-        tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-3.2-3B', trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-3.2-1B', trust_remote_code=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             
-        def tokenize_function(examples):
-            result = tokenizer(
-                examples["sentence"],
-                padding="max_length",
-                truncation=True,
-                max_length=128,
-                return_tensors=None,
-                return_attention_mask=True
-            )
-            result["labels"] = result["input_ids"].copy()
-            return result
-            
+        # Tokenize dataset with the new tokenization function
         tokenized_dataset = train_dataset.map(
-            tokenize_function,
+            lambda x: tokenize_function(x, tokenizer),
             batched=True,
-            batch_size=32,
+            batch_size=1,
             remove_columns=train_dataset.column_names,
             desc="Tokenizing"
         )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_dir = os.path.join('/scratch/arjun.dosajh/llama_finetune', f"run_{timestamp}")
+        save_dir = os.path.join('./llama_finetune_save_dir', f"run_{timestamp}")
         if local_rank <= 0:
             os.makedirs(save_dir, exist_ok=True)
 
-        # Modified training arguments to handle mixed precision properly
         training_args = TrainingArguments(
             output_dir=save_dir,
             save_strategy="steps",
@@ -236,9 +301,9 @@ def main():
             learning_rate=1e-5,
             num_train_epochs=300,
             weight_decay=0.01,
-            fp16=False,  # Disable fp16 training
-            bf16=True,  # Use bfloat16 instead
-            per_device_train_batch_size=8,
+            fp16=False,
+            bf16=True,
+            per_device_train_batch_size=1,
             gradient_accumulation_steps=16,
             max_grad_norm=1.0,
             local_rank=local_rank,
@@ -257,9 +322,8 @@ def main():
             dataloader_pin_memory=False,
         )
 
-        # Load model with bfloat16 dtype
         model = AutoModelForCausalLM.from_pretrained(
-            'meta-llama/Llama-3.2-3B',
+            'meta-llama/Llama-3.2-1B',
             trust_remote_code=True,
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
             low_cpu_mem_usage=True,
@@ -280,7 +344,10 @@ def main():
                 broadcast_buffers=False
             )
 
-        # Use custom trainer
+        # Initialize wandb if on main process
+        if local_rank <= 0:
+            wandb_run = setup_wandb(local_rank)
+
         trainer = CustomTrainer(
             model=model,
             args=training_args,
