@@ -1,0 +1,37 @@
+#+TITLE: Question Generation with Multi Hop Reasoning
+#+AUTHOR: Akshit Kumar, Arjun Dosajh, Hardik Mittal
+
+* Problem Statement
+Given some context and an answer, generate questions which involve multi-hop reasoning.
+
+* Experiments
+** RAG
+
+* Using a Knowledge base as context
+** MetaQA
+We utilized the MetaQA dataset of movies for experimentation.
+
+** Knowledge graph
+- We first converted the knowledge base into a knowledge graph.
+- This was done using the ~networkx~ library from python.
+- A directed graph was created from movies to other entities like actor, year of release etc.
+** Creating hops
+Then we wrote three different methods to generate "hops" from this knowledge graph where every "hop" was one single relation pair (movie, entity, relation).
+*** Random Neighbour
+As the name suggests, this chooses one of the neighbours randomly every time there is a hop, we limit this to 5 hops.
+*** Most popular neighbour
+This method chooses the neighbour with the highest degree every time.
+*** Semantically furthest away neighbour
+This method was incorporated to make the dataset more diverse by taking in the longest
+relationshiops for generating hops. We use a sentence transformer (minilm) to
+generate embeddings for all entities and movies and *always* select the furthest
+away entity when we decide to jump.
+
+* Applications and metrics
+** Student teacher learning
+This method of generating simple reasoning questions to help steer
+a smaller LM to reason is a very popular way
+to train smaller language models. We utilise the knowledge
+graph to ground the smaller LM on the knowledge base
+while also helping it learn how to reason about complex questions
+from the simpler hops.
