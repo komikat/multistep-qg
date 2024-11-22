@@ -1,12 +1,12 @@
 import ijson
 from llama_cpp import Llama
 
-f = open("./../../data/hotpot/hotpot_train_v1.1.json")
+f = open("../hotpot_train_v1.1.json")
 json = f.read()
 a = ijson.items(json, "item")
 
 llm = Llama(
-      model_path="../../../llama/models/Llama-3.2-1B-Instruct-Q6_K.gguf",
+      model_path="../../../llama-3.2-1b-instruct-q6_k.gguf",
       n_gpu_layers=-1, # Uncomment to use GPU acceleration
       # seed=1337, # Uncomment to set a specific seed
       n_ctx=4096, # Uncomment to increase the context window
@@ -18,13 +18,12 @@ def c():
     cont = " ".join([" ".join(cont[1]) for cont in s["context"]])
     print(q)
     answer = s["answer"]
+    print(answer)
     return generate(cont, answer)
 
 def generate(context, answer):
     return llm(
-      f"""You are a helpful question generator. You are given some context
-      and asked to generate a question which can be answered to get the correct
-      specified answer.:
+      f"""You are a helpful question generator. Given some context and the correct answer, you need to generate what could have been the original question.
       ***context: {context}***
       ***answer: {answer}***
       ***question:""",
@@ -35,4 +34,4 @@ def generate(context, answer):
 
 ### call llama for the next json item this way:
 if __name__ == "__main__":
-    c()
+    print(c())

@@ -43,8 +43,10 @@ def setup_logging():
 
 def format_qa_pair(item):
     """Format a single QA pair from the JSON data."""
+    if item['complex'] == None:
+        return None
     complex_q = item['complex']['question']
-    simple_questions = '\n'.join([hop['question'] for hop in item['hops']])
+    simple_questions = '\n'.join([hop['question'] for hop in item['simple']])
     answer = item['complex']['answer']
     
     # Add a clear separator between input and output
@@ -63,8 +65,9 @@ def prepare_dataset(json_file):
         data = json.load(f)
     
     # Format each example
-    formatted_data = [format_qa_pair(item) for item in data]
-    
+    # formatted_data = [format_qa_pair(item) for item in data]
+    formatted_data = [format_qa_pair(item) for item in data if format_qa_pair(item) is not None]
+
     # Create dataset
     dataset = Dataset.from_list(formatted_data)
     return dataset
@@ -272,7 +275,7 @@ def main():
             )
 
         # Load and prepare dataset
-        train_dataset = prepare_dataset('graph/dataset.json')
+        train_dataset = prepare_dataset('graph/furthest.json')
         
         tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-3.2-1B', trust_remote_code=True)
         if tokenizer.pad_token is None:
@@ -288,7 +291,7 @@ def main():
         )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_dir = os.path.join('./llama_finetune_save_dir', f"run_{timestamp}")
+        save_dir = os.path.join('/scratch/arjun.dosajh/llama_finetune/', f"run_{timestamp}")
         if local_rank <= 0:
             os.makedirs(save_dir, exist_ok=True)
 
